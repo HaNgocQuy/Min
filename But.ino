@@ -1,104 +1,163 @@
-// Thư viện-----------
 #include <Wire.h>
 #include <MPU6050.h>
 #include <BleMouse.h>
 
 MPU6050 mpu;
-BleMouse bleMouse("But_3d", "HaNgocQuy", 100);
+BleMouse bleMouse("Bút bluetooth");
 
-// Đặt chân chuột trái,phải
-#define CHUOT_TRAI 4
-#define CHUOT_PHAI 5
+// Lập biến-------------------------------------------------------
+// Các biến đầu vào của IMU
+int16_t ax, ay, az;
+int16_t gx, gy, gz;
 
+// Tính và loại bỏ độ lệch trung bình cảm biến đo được(hiệu chỉnh)
+long Ogx = 0.0f, Ogz = 0.0f;
+
+// Tính vị trí chuột
+float x = 1.0f, y = 1.0f;    // Chuột đầu ra(thật)
+float x2 = 0.0f, y2 = 0.0f;  // Chuột đầu vào(giả)
+
+// Các Biến cài đặt
+const float r = 80.0f;
+const float v = 10.0f;
+
+int16_t i = 0, n = 1000;
+long tongGx = 0, tongGz = 0;
+//================================================================
+
+// Chuẩn bị
 void setup() {
-  // Mở bảng giám sát
+  // Chạy serial để quan sát
   Serial.begin(115200);
-  Wire.begin(21, 22); // Chân 21 là SDA, 22 là SCL
-  
-  // Bắt đầu chạy IMU (mpu6050) 
+
+  // Đặt vai trò chân 21 là sda, chân 22 là scl(theo esp32)
+  Wire.begin(21, 22);
+
   mpu.initialize();
-  // Bắt đầu điều khiển chuột
   bleMouse.begin();
 
-  // Kết nối với IMU (mpu6050)
-  if (mpu.testConnection()) {
-    Serial.println("da ket noi mpu6050");
+  // Đặt chức năng của các chân
+  pinMode(4, INPUT_PULLUP);  // Chuột trái
+  pinMode(5, INPUT_PULLUP);  // Chuột phải
+  pinMode(2, OUTPUT);        // Đèn led
+
+  // Kiểm tra kết nối IMU
+  if (!mpu.testConnection()) {
+    Serial.println("Kết nối MPU thất bại!");
   } else {
-    Serial.println("ket noi that bai mpu6050");
+    Serial.println("Đã kết nối MPU!");
   }
-
-  // Đặt chế độ nút nhấn
-  pinMode(CHUOT_TRAI, INPUT_PULLUP);
-  pinMode(CHUOT_PHAI, INPUT_PULLUP);
 }
-//Tạo các biến--------------------------------
-int16_t ax, ay, az; // Gia tốc hướng (sẽ cần khi phát triển mô phỏng vị trí chuột)
-int16_t gx, gy, gz; // Tốc độ xoay
 
-// Khi không di chuyển, imu vẫn gửi tín hiệu: nhiễu, tín hiệu sai
-// Tín hiệu sai, cụ thể là tín hiệu luôn tăng nhiều hơn so với giá trị gốc một giá trị không đổi.
-// VD: lỗi +3000 và gốc a = 12000 => tín hiệu gửi ra 12000 + 3000 = 15000
-long tongGx = 0, tongGz = 0; // Các biến khắc phục lỗi
-int16_t Ogx = 0, Ogz = 0; // Các biến khắc phục lỗi
-
-int16_t dx = 0, dz = 0; // di chuyển chuột
-int16_t h = 800; // Chiều cao - độ nhạy ( cần dùng nếu mô phỏng 3 chiều )
-int16_t i = 0, n = 1000; // Các biến khác
-//============================================
 void loop() {
   if (bleMouse.isConnected()) {
-    // Lấy dữ liệu nguyên từ cảm biến-------------
+    // Đọc tốc độ góc từ cảm biến
     mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
-    // hiệu chỉnh đầu ra cảm biến-----------------
+
     if (i < n) {
       if (i == 0) {
-      Serial.println("Đừng di chuyển mpu");
+        digitalWrite(2, HIGH);
+        Serial.println("Đừng di chuyển mpu");
       }
       // Lấy tổng các giá trị gửi ra
       tongGx += gx;
       tongGz += gz;
-      i ++;
+      i++;
       return;
     }
     if (i == n) {
       // Chia cho số lần đã lấy
       Ogx = tongGx / n;
       Ogz = tongGz / n;
+      x = 1;
+      y = 1;
+      x2 = 0;
+      y2 = 0;
       Serial.println("Đã hoàn tất");
+      digitalWrite(2, LOW);
       delay(1000);
-      i ++;
+      i++;
     }
-    // Ta lấy được Ogx/z là giá trị lỗi trung bình
-    //============================================
-    //Di chuyển chuột-----------------------------
-    // Lấy tốc độ xoay (cảm biến - lỗi) chia cho độ nhạy
-    dx = (gx - Ogx) / h; 
-    dz = -(gz - Ogz) / h;
+    // Tính vị trí chuột giả
+    // (float)gx - Ogx hay (float)gz - Ogz là đầu ra cảm biến sau khi hiệu chỉnh: lấy cảm biến thật trừ độ lệch
+    float dx2 = -((float)gz - Ogz) / 800.0f;
+    float dy2 = -((float)gx - Ogx) / 800.0f;
+    if (fabsf(dx2) > 1 || fabsf(dy2) > 1) {
+      x2 += dx2;
+      y2 += dy2;
+    }
+    // Tìm tọa độ vectơ d(từ chuột thật đến chuột giả)
+    float dx = x2 - x;
+    float dy = y2 - y;
+
+    // Tính chiều dài vectơ
+    float dist = sqrtf(dx * dx + dy * dy);
+    // Tính khoảng cần đi
+    float can = dist - r;
+    // Tính khoảng nên đi mỗi lần lặp(vì giới hạn tốc độ)
+    float move = 0.0f;
+    if (can > 0.0f) {
+      move = fminf(can, v);
+    } else {
+      move = 0.0f;
+    }
+
+    float movex = 0.0f;
+    float movey = 0.0f;
+
+    // Để tránh lỗi: dist = 0 thì không chia được
+    if (dist > 0.0001f) {
+      // nếu có khoảng cách giữa chuột thật và đầu ra thì tạo đường đi(x, y) cho chuột
+      movex = (dx / dist) * move;
+      movey = (dy / dist) * move;
+    } else {
+      // Nếu không thì không di chuyển
+      movex = 0.0f;
+      movey = 0.0f;
+    }
+    // Tính vị trí chuột thật
+    x += movex;
+    y += movey;
+
+    // Nếu dữ liệu lớn sẽ đặt lại tránh quá tải
+    const float LIMIT = 3e4f;
+    if (fabsf(x) > LIMIT || fabsf(y) > LIMIT || fabsf(x2) > LIMIT || fabsf(y2) > LIMIT) {
+      x = 0.0f;
+      y = 0.0f;
+      if (fabsf(dx) < LIMIT || fabsf(dy) < LIMIT) {
+        x2 = dx;
+        y2 = dy;
+      } else {
+        x2 = 0.0f;
+        y2 = 0.0f;
+      }
+    }
+
     // Di chuyển
-    bleMouse.move(dx, dz); // Trên trục tọa độ Oxy, dx là trục x, dz là trục y
-    //============================================
-    //Nút nhấn chuột------------------------------
+    bleMouse.move(movex, movey);  // Di chuyển chuột theo vectơ(movex, movey)
+
+    // Nhấn Chuột
     // Chuột trái
-    if (digitalRead(CHUOT_TRAI) == LOW) { // Nếu nhấn nút
-      bleMouse.press(MOUSE_LEFT); // Nhấn(giữ) chuột
-    } else { // Nếu không
-      bleMouse.release(MOUSE_LEFT); // Thả chuột
+    if (digitalRead(4) == LOW) {     // Nếu nhấn nút
+      bleMouse.press(MOUSE_LEFT);    // Nhấn(giữ) chuột
+    } else {                         // Nếu không
+      bleMouse.release(MOUSE_LEFT);  // Thả chuột
     }
-    // Chuột phải
-    if (digitalRead(CHUOT_PHAI) == LOW) {
+    // Chuột phải (tương tự)
+    if (digitalRead(5) == LOW) {
       bleMouse.press(MOUSE_RIGHT);
     } else {
       bleMouse.release(MOUSE_RIGHT);
     }
-    //============================================
-    //Giám sát------------------------------------
-    Serial.print(" dx: "); Serial.print(dx);
-    Serial.print(" dy: "); Serial.print(dz);
-    Serial.print(" ogx: "); Serial.print(Ogx);
-    Serial.print(" ogy: "); Serial.print(Ogz);
-    Serial.print(" L: "); Serial.print(digitalRead(CHUOT_TRAI));
-    Serial.print(" R: "); Serial.println(digitalRead(CHUOT_PHAI));
-    //============================================
+
+    // Giám sát
+    Serial.print((long)roundf(x));
+    Serial.print(",");
+    Serial.print((long)roundf(y));
+    Serial.print(";");
+    Serial.print((long)roundf(x2));
+    Serial.print(",");
+    Serial.println((long)roundf(y2));
+    delay(5);
   }
-  delay(5); // Delay để giảm bớt công việc cho cpu, tránh quá tải
 }
